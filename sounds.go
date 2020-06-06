@@ -1,9 +1,17 @@
 package main // unit: Sounds
 
+import (
+	"time"
+)
+
 type TDrumData struct {
 	Len  int16
 	Data [255]uint16
 }
+
+const (
+	TicksPerNano = 54924578
+)
 
 var (
 	SoundEnabled            bool
@@ -13,35 +21,32 @@ var (
 	SoundDurationMultiplier byte
 	SoundDurationCounter    byte
 	SoundBuffer             string
-	SoundNewVector          *uintptr
-	SoundOldVector          *uintptr
 	SoundBufferPos          int16
 	SoundIsPlaying          bool
-	SoundTimeCheckCounter   int16
-	UseSystemTimeForElapsed bool
+	SoundTicker             *time.Ticker
 	TimerTicks              uint16
-	SoundTimeCheckHsec      int16
+	SoundTimeCounter        time.Time
 	SoundDrumTable          [10]TDrumData
 )
 
 // implementation uses: Crt, Dos
 
 func SoundQueue(priority int16, pattern string) {
-	// if !SoundBlockQueueing && (!SoundIsPlaying || (priority >= SoundCurrentPriority && SoundCurrentPriority != -1 || priority == -1)) {
-	// 	if priority >= 0 || !SoundIsPlaying {
-	// 		SoundCurrentPriority = priority
-	// 		SoundBuffer = pattern
-	// 		SoundBufferPos = 1
-	// 		SoundDurationCounter = 1
-	// 	} else {
-	// 		SoundBuffer = Copy(SoundBuffer, SoundBufferPos, Length(SoundBuffer)-SoundBufferPos+1)
-	// 		SoundBufferPos = 1
-	// 		if Length(SoundBuffer)+Length(pattern) < 255 {
-	// 			SoundBuffer += pattern
-	// 		}
-	// 	}
-	// 	SoundIsPlaying = true
-	// }
+	if !SoundBlockQueueing && (!SoundIsPlaying || (priority >= SoundCurrentPriority && SoundCurrentPriority != -1 || priority == -1)) {
+	 	if priority >= 0 || !SoundIsPlaying {
+	 		SoundCurrentPriority = priority
+	 		SoundBuffer = pattern
+	 		SoundBufferPos = 1
+	 		SoundDurationCounter = 1
+	 	} else {
+	 		SoundBuffer = Copy(SoundBuffer, SoundBufferPos, Length(SoundBuffer)-SoundBufferPos+1)
+	 		SoundBufferPos = 1
+	 		if Length(SoundBuffer)+Length(pattern) < 255 {
+	 			SoundBuffer += pattern
+	 		}
+	 	}
+	 	SoundIsPlaying = true
+	}
 }
 
 func SoundClearQueue() {
@@ -110,71 +115,55 @@ func SoundPlayDrum(drum *TDrumData) {
 	NoSound()
 }
 
-func SoundCheckTimeIntr() {
-	//var hour, minute, sec, hSec uint16
-	//GetTime(&hour, &minute, &sec, &hSec)
-	//if SoundTimeCheckHsec != 0 && int16(hSec) != SoundTimeCheckHsec {
-	//	SoundTimeCheckCounter = 0
-	//	UseSystemTimeForElapsed = true
-	//}
-	//SoundTimeCheckHsec = int16(hSec)
-}
-
 func SoundHasTimeElapsed(counter *int16, duration int16) (SoundHasTimeElapsed bool) {
-	return true
-	// var (
-	// 	hour, minute, sec, hSec uint16
-	// 	hSecsDiff               uint16
-	// 	hSecsTotal              int16
-	// )
-	// if SoundTimeCheckCounter > 0 && SoundTimeCheckCounter%2 == 1 {
-	// 	SoundTimeCheckCounter--
-	// 	SoundCheckTimeIntr()
-	// }
-	// if UseSystemTimeForElapsed {
-	// 	GetTime(&hour, &minute, &sec, &hSec)
-	// 	hSecsTotal = int16(sec*100 + hSec)
-	// 	hSecsDiff = uint16(hSecsTotal-*counter+6000) % 6000
-	// } else {
-	// 	hSecsTotal = int16(TimerTicks * 6)
-	// 	hSecsDiff = uint16(hSecsTotal - *counter)
-	// }
-	// if hSecsDiff >= uint16(duration) {
-	// 	SoundHasTimeElapsed = true
-	// 	*counter = hSecsTotal
-	// } else {
-	// 	SoundHasTimeElapsed = false
-	// }
-	// return
+	var (
+		sec, hSec               uint16
+		hSecsDiff               uint16
+		hSecsTotal              int16
+	)
+	sec = uint16(SoundTimeCounter.Second())
+	hSec = uint16(SoundTimeCounter.Nanosecond() / (1000 * 1000 * 10))
+	hSecsTotal = int16(sec*100 + hSec)
+ 	hSecsDiff = uint16(hSecsTotal-*counter+6000) % 6000
+	if hSecsDiff >= uint16(duration) {
+		SoundHasTimeElapsed = true
+		*counter = hSecsTotal
+	} else {
+		SoundHasTimeElapsed = false
+	}
+	return
 }
 
 func SoundTimerHandler() {
-	TimerTicks++
-	if SoundTimeCheckCounter > 0 && SoundTimeCheckCounter%2 == 0 {
-		SoundTimeCheckCounter--
-	}
-	if !SoundEnabled {
-		SoundIsPlaying = false
-		NoSound()
-	} else if SoundIsPlaying {
-		SoundDurationCounter--
-		if SoundDurationCounter <= 0 {
-			NoSound()
-			if SoundBufferPos >= Length(SoundBuffer) {
-				NoSound()
+	for {
+		select {
+		case time := <-SoundTicker.C:
+			SoundTimeCounter = time
+			TimerTicks++
+			if !SoundEnabled {
 				SoundIsPlaying = false
-			} else {
-				if SoundBuffer[SoundBufferPos-1] == '\x00' {
+				NoSound()
+			} else if SoundIsPlaying {
+				SoundDurationCounter--
+				if SoundDurationCounter <= 0 {
 					NoSound()
-				} else if SoundBuffer[SoundBufferPos-1] < '\xf0' {
-					Sound(SoundFreqTable[Ord(SoundBuffer[SoundBufferPos-1])-1])
-				} else {
-					SoundPlayDrum(&SoundDrumTable[Ord(SoundBuffer[SoundBufferPos-1])-240])
-				}
+					if SoundBufferPos >= Length(SoundBuffer) {
+						NoSound()
+						SoundIsPlaying = false
+					} else {
+						if SoundBuffer[SoundBufferPos-1] == '\x00' {
+							NoSound()
+						} else if SoundBuffer[SoundBufferPos-1] < '\xf0' {
+							Sound(SoundFreqTable[Ord(SoundBuffer[SoundBufferPos-1])-1])
+						} else {
+							SoundPlayDrum(&SoundDrumTable[Ord(SoundBuffer[SoundBufferPos-1])-240])
+						}
 
-				SoundBufferPos++
-				SoundDurationCounter = SoundDurationMultiplier * Ord(SoundBuffer[SoundBufferPos-1])
-				SoundBufferPos++
+						SoundBufferPos++
+						SoundDurationCounter = SoundDurationMultiplier * Ord(SoundBuffer[SoundBufferPos-1])
+						SoundBufferPos++
+					}
+				}
 			}
 		}
 	}
@@ -182,7 +171,7 @@ func SoundTimerHandler() {
 }
 
 func SoundUninstall() {
-	// SetIntVec(0x1C, SoundOldVector)
+	// TODO
 }
 
 func SoundParse(input string) (SoundParse string) {
@@ -290,17 +279,13 @@ func SoundParse(input string) (SoundParse string) {
 func init() {
 	SoundInitFreqTable()
 	SoundInitDrumTable()
-	SoundTimeCheckCounter = 36
-	UseSystemTimeForElapsed = false
-	TimerTicks = 0
-	SoundTimeCheckHsec = 0
 	SoundEnabled = true
 	SoundBlockQueueing = false
 	SoundClearQueue()
 	SoundDurationMultiplier = 1
 	SoundIsPlaying = false
+
 	TimerTicks = 0
-	// SoundNewVector = &SoundTimerHandler
-	// GetIntVec(0x1C, SoundOldVector)
-	// SetIntVec(0x1C, SoundNewVector)
+	SoundTicker = time.NewTicker(time.Duration(TicksPerNano) * time.Nanosecond)
+	go SoundTimerHandler()
 }

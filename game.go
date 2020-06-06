@@ -3,7 +3,6 @@ package main // unit: Game
 import (
 	"os"
 	"path/filepath"
-	"time"
 )
 
 // interface uses: GameVars, TxtWind
@@ -1485,10 +1484,6 @@ func GamePlayLoop(boardChanged bool) {
 
 		if CurrentStatTicked > Board.StatCount && !GamePlayExitRequested {
 			// all stats ticked
-
-			// TODO: should wait till next TickTimeCounter/TickTimeDuration up
-			time.Sleep(time.Duration(TickTimeDuration) * 10 * time.Millisecond)
-
 			if SoundHasTimeElapsed(&TickTimeCounter, TickTimeDuration) {
 				// next cycle
 				CurrentTick++
